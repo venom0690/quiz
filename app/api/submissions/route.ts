@@ -87,11 +87,11 @@ export async function DELETE(req: NextRequest) {
       return NextResponse.json({ error: error.message }, { status: 500 })
     }
   } else {
-    // Delete all submissions
+    // Delete all submissions - use gte on created_at to match all rows
     const { error } = await supabase
       .from("submissions")
       .delete()
-      .neq("id", "00000000-0000-0000-0000-000000000000") // Delete all rows
+      .gte("created_at", "1970-01-01")
 
     if (error) {
       return NextResponse.json({ error: error.message }, { status: 500 })
