@@ -1,26 +1,41 @@
 import { NextRequest, NextResponse } from "next/server"
-import fs from "fs"
-import path from "path"
-
-const DATA_FILE = path.join(process.cwd(), "data", "submissions.json")
-
-function readData() {
-  if (!fs.existsSync(DATA_FILE)) {
-    fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true })
-    fs.writeFileSync(DATA_FILE, JSON.stringify({}))
-  }
-  return JSON.parse(fs.readFileSync(DATA_FILE, "utf-8"))
-}
-
-function writeData(data: object) {
-  fs.mkdirSync(path.dirname(DATA_FILE), { recursive: true })
-  fs.writeFileSync(DATA_FILE, JSON.stringify(data, null, 2))
-}
+import { createClient } from "@/lib/supabase/server"
 
 // GET /api/submissions — returns all teams and their submissions
 export async function GET() {
-  const data = readData()
-  return NextResponse.json(data)
+  const supabase = await createClient()
+  
+  const { data, error } = await supabase
+    .from("submissions")
+    .select("*")
+    .order("team_name")
+    .order("question_number")
+
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+
+  // Transform flat data into grouped format by team name
+  const grouped: Record<string, Array<{
+    questionNumber: number
+    answer: string | null
+    timeTaken: number | null
+    submittedAt: string
+  }>> = {}
+
+  for (const row of data) {
+    if (!grouped[row.team_name]) {
+      grouped[row.team_name] = []
+    }
+    grouped[row.team_name].push({
+      questionNumber: row.question_number,
+      answer: row.answer,
+      timeTaken: row.time_taken,
+      submittedAt: row.submitted_at,
+    })
+  }
+
+  return NextResponse.json(grouped)
 }
 
 // POST /api/submissions — saves a submission for a team
@@ -32,28 +47,56 @@ export async function POST(req: NextRequest) {
     return NextResponse.json({ error: "Missing fields" }, { status: 400 })
   }
 
-  const data = readData()
-  if (!data[teamName]) data[teamName] = []
+  const supabase = await createClient()
 
-  // replace if already exists for this question
-  data[teamName] = data[teamName].filter(
-    (s: { questionNumber: number }) => s.questionNumber !== questionNumber
-  )
-  data[teamName].push({ questionNumber, answer, timeTaken, submittedAt })
+  // Upsert: insert or update if team+question already exists
+  const { error } = await supabase
+    .from("submissions")
+    .upsert(
+      {
+        team_name: teamName,
+        question_number: questionNumber,
+        answer,
+        time_taken: timeTaken,
+        submitted_at: submittedAt || new Date().toISOString(),
+      },
+      {
+        onConflict: "team_name,question_number",
+      }
+    )
 
-  writeData(data)
+  if (error) {
+    return NextResponse.json({ error: error.message }, { status: 500 })
+  }
+
   return NextResponse.json({ success: true })
 }
 
 // DELETE /api/submissions?team=TeamName — clears a team's data
 export async function DELETE(req: NextRequest) {
   const team = req.nextUrl.searchParams.get("team")
-  const data = readData()
+  const supabase = await createClient()
+
   if (team) {
-    delete data[team]
+    const { error } = await supabase
+      .from("submissions")
+      .delete()
+      .eq("team_name", team)
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
   } else {
-    Object.keys(data).forEach((k) => delete data[k])
+    // Delete all submissions
+    const { error } = await supabase
+      .from("submissions")
+      .delete()
+      .neq("id", "00000000-0000-0000-0000-000000000000") // Delete all rows
+
+    if (error) {
+      return NextResponse.json({ error: error.message }, { status: 500 })
+    }
   }
-  writeData(data)
+
   return NextResponse.json({ success: true })
 }
